@@ -101,6 +101,8 @@ typedef struct _tagPortDevice
 
     BOOLEAN             DeviceOK;
     UINT                DeviceId;
+
+    WDFDMAENABLER       dmaEnablerHandler;
 } PORTS_DEVICE, *PPORTS_DEVICE;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(PORTS_DEVICE, GetPortsDevice)

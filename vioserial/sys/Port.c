@@ -240,6 +240,7 @@ VIOSerialDiscardPortDataLocked(
         if(!NT_SUCCESS(status))
         {
            ++ret;
+           PPORTS_DEVICE pContext = GetPortsDevice(port->BusDevice);
            VIOSerialFreeBuffer(buf);
         }
         buf = (PPORT_BUFFER)virtqueue_get_buf(vq, &len);

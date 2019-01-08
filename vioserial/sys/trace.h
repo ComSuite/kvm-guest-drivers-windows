@@ -31,7 +31,7 @@
 #if ((OSVERSION_MASK & NTDDI_VERSION) > NTDDI_VISTA)
 #define EVENT_TRACING
 #endif
-
+#undef EVENT_TRACING
 #if !defined(EVENT_TRACING)
 
 extern ULONG driverDebugFlags;

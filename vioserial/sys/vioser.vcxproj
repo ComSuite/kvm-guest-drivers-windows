@@ -231,7 +231,7 @@
       <WppKernelMode>true</WppKernelMode>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);..\..\VirtIO;..\..\VirtIO\WDF</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);POOL_NX_OPTIN=1</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);POOL_NX_OPTIN=1;PRINT_DEBUG</PreprocessorDefinitions>
       <DisableSpecificWarnings>4603;4627;4986;4987;4996;6387;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>

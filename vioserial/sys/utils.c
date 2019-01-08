@@ -112,7 +112,7 @@ void InitializeDebugPrints(IN PDRIVER_OBJECT  DriverObject, PUNICODE_STRING Regi
     UNREFERENCED_PARAMETER(RegistryPath);
 
     bDebugPrint = 1;
-    driverDebugLevel = TRACE_LEVEL_FATAL;
+    driverDebugLevel = TRACE_LEVEL_RESERVED9;//TRACE_LEVEL_FATAL;
     virtioDebugLevel = -1;
 }
 

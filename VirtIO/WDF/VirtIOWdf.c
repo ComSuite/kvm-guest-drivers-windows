@@ -161,7 +161,26 @@ NTSTATUS VirtIOWdfInitQueues(PVIRTIO_WDF_DRIVER pWdfDriver,
     return status;
 }
 
+void VirtIOWdfInitDmaQueues(struct virtio_dma *dma, 
+                            WDFDMAENABLER dmaEnabler,
+                            ULONG memoryTag,
+                            ULONG nQueues)
+{
+    dma->dma_enabler = dmaEnabler;
+    dma->dma_map = ExAllocatePoolWithTag(
+                            NonPagedPool,
+                            nQueues * sizeof(struct virtio_dma_item),
+                            memoryTag);
+    RtlZeroMemory(dma->dma_map, nQueues * sizeof(struct virtio_dma_item));
+    dma->memory_tag = memoryTag;
+    dma->max_index = nQueues;
+    dma->last_index = 0;
+    dma->free_index = -1;
+
+}
+
 NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
+                               WDFDMAENABLER dmaEnabler,
                                ULONG nQueues,
                                VirtIOWdfGetQueueParamCallback pQueueParamFunc,
                                VirtIOWdfSetQueueCallback pSetQueueFunc)
@@ -177,6 +196,8 @@ NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
     if (!NT_SUCCESS(status)) {
         return status;
     }
+
+    VirtIOWdfInitDmaQueues(&pWdfDriver->VIODevice.dma, dmaEnabler, pWdfDriver->MemoryTag, nQueues * 2);
 
     /* let VirtioLib know how many queues we'll need */
     status = virtio_reserve_queue_memory(&pWdfDriver->VIODevice, nQueues);
@@ -250,6 +271,11 @@ NTSTATUS VirtIOWdfDestroyQueues(PVIRTIO_WDF_DRIVER pWdfDriver)
 {
     virtio_device_reset(&pWdfDriver->VIODevice);
     virtio_delete_queues(&pWdfDriver->VIODevice);
+
+    if (pWdfDriver->VIODevice.dma.dma_map != NULL)
+    {
+        ExFreePoolWithTag(pWdfDriver->VIODevice.dma.dma_map, pWdfDriver->VIODevice.dma.memory_tag);
+    }
 
     return STATUS_SUCCESS;
 }

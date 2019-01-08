@@ -34,45 +34,133 @@
 #include "VirtIOWdf.h"
 #include "private.h"
 
+
+static LONGLONG get_dma_map_get_item_index(struct virtio_dma *dma, void *virt)
+{
+    for (ULONG i = 0; i < dma->last_index; i++)
+    {
+        if (virt >= dma->dma_map[i].dma_virtual_address && (u8*)virt < ((u8*)dma->dma_map[i].dma_virtual_address + dma->dma_map[i].size))
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static LONGLONG get_free_item_index(struct virtio_dma *dma)
+{
+    LONGLONG index = -1;
+
+    if (dma->free_index >= 0)
+    {
+        index = dma->free_index;
+        for (LONGLONG i = index + 1; i < dma->last_index; i++)
+        {
+            if (dma->dma_map[i].used == 0)
+            {
+                dma->free_index = i;
+                return index;
+            }
+        }
+        dma->free_index = -1;
+    }
+    else
+    {
+        if (dma->last_index < dma->max_index)
+        {
+            index = dma->last_index;
+            dma->last_index++;
+        }
+    }
+
+    return index;
+}
+
+static WDFCOMMONBUFFER get_common_buffer(struct virtio_dma *dma, void *virt, BOOLEAN clear)
+{
+    if (dma == NULL || virt == NULL)
+        return NULL;
+
+    WDFCOMMONBUFFER buffer = NULL;
+
+    LONGLONG i = get_dma_map_get_item_index(dma, virt);
+    if (i >= 0)
+    {
+        buffer = dma->dma_map[i].dma_common_buffer;
+        if (clear)
+        {
+            RtlZeroMemory(&dma->dma_map[i], sizeof(struct virtio_dma_item));
+            if (dma->free_index < 0 || i < dma->free_index)
+                dma->free_index = i;
+        }
+    }
+
+    return buffer;
+}
+
 static void *mem_alloc_contiguous_pages(void *context, size_t size)
 {
-    PHYSICAL_ADDRESS HighestAcceptable;
-    void *ret;
+    void *ret = NULL;
+    NTSTATUS status;
+    WDFDMAENABLER dma_enabler = NULL;
+    WDFCOMMONBUFFER buffer = NULL;
+    VirtIODevice *device = (VirtIODevice*)context;
 
-    UNREFERENCED_PARAMETER(context);
-
-    HighestAcceptable.QuadPart = 0xFFFFFFFFFF;
-#if defined(NTDDI_WIN8) && (NTDDI_VERSION >= NTDDI_WIN8)
+    if (device != NULL)
     {
-        PHYSICAL_ADDRESS Zero = { 0 };
-        ret = MmAllocateContiguousNodeMemory(
-            size,
-            Zero,
-            HighestAcceptable,
-            Zero,
-            PAGE_READWRITE,
-            MM_ANY_NODE_OK);
+        dma_enabler = device->dma.dma_enabler;
+        if (dma_enabler != NULL)
+        {
+            LONGLONG i = get_free_item_index(&device->dma);
+            if (i >= 0)
+            {
+                status = WdfCommonBufferCreate(dma_enabler, size, WDF_NO_OBJECT_ATTRIBUTES, &buffer);
+                if (status == STATUS_SUCCESS)
+                {
+                    ret = WdfCommonBufferGetAlignedVirtualAddress(buffer);
+                    device->dma.dma_map[i].dma_common_buffer = buffer;
+                    device->dma.dma_map[i].dma_virtual_address = ret;
+                    device->dma.dma_map[i].dma_physical_address = WdfCommonBufferGetAlignedLogicalAddress(buffer);
+                    device->dma.dma_map[i].size = size;
+                    device->dma.dma_map[i].used = 1;
+                }
+            }
+        }
     }
-#else
-    ret = MmAllocateContiguousMemory(size, HighestAcceptable);
-#endif
-    RtlZeroMemory(ret, size);
+
+    if (ret != NULL)
+    {
+        RtlZeroMemory(ret, size);
+    }
+
     return ret;
 }
 
 static void mem_free_contiguous_pages(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
-
-    MmFreeContiguousMemory(virt);
+    if (context != NULL)
+    {
+        WDFCOMMONBUFFER buffer = get_common_buffer(&((VirtIODevice *)context)->dma, virt, TRUE);
+        if (buffer != NULL)
+        {
+            WdfObjectDelete(buffer);
+        }
+    }
 }
 
 static ULONGLONG mem_get_physical_address(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
+    VirtIODevice *device = (VirtIODevice*)context;
 
-    PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(virt);
-    return pa.QuadPart;
+    LONGLONG i = get_dma_map_get_item_index(&device->dma, virt);
+    if (i >= 0)
+    {
+        LONGLONG delta = (u8*)virt - (u8*)device->dma.dma_map[i].dma_virtual_address;
+        return device->dma.dma_map[i].dma_physical_address.QuadPart + delta;
+    }
+
+    return 0;
 }
 
 static void *mem_alloc_nonpaged_block(void *context, size_t size)

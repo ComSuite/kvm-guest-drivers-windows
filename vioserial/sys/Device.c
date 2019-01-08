@@ -110,6 +110,9 @@ VIOSerialInitInterruptHandling(
     return status;
 }
 
+#define VIRTIOSER_MAXIMUM_TRANSFER_LENGTH    (10*4096)
+#define VIRTIOSER_DTE_ALIGNMENT_16      FILE_32_BYTE_ALIGNMENT 
+
 NTSTATUS
 VIOSerialEvtDeviceAdd(
     IN WDFDRIVER Driver,
@@ -193,6 +196,31 @@ VIOSerialEvtDeviceAdd(
     busInfo.BusNumber = pContext->DeviceId;
 
     WdfDeviceSetBusInformationForChildren(hDevice, &busInfo);
+
+    WDF_DMA_ENABLER_CONFIG dmaConfig;
+
+    WdfDeviceSetAlignmentRequirement(
+        hDevice,
+        VIRTIOSER_DTE_ALIGNMENT_16
+    );
+
+    WDF_DMA_ENABLER_CONFIG_INIT(
+        &dmaConfig,
+        WdfDmaProfileScatterGather64Duplex,
+        VIRTIOSER_MAXIMUM_TRANSFER_LENGTH
+    );
+
+    status = WdfDmaEnablerCreate(
+        hDevice,
+        &dmaConfig,
+        WDF_NO_OBJECT_ATTRIBUTES,
+        (WDFDMAENABLER*)&pContext->dmaEnablerHandler
+    );
+
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "WdfDmaEnablerCreate failed - 0x%x\n", status);
+        return status;
+    }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
     return status;
@@ -431,6 +459,7 @@ VIOSerialInitAllQueues(
 
     status = VirtIOWdfInitQueuesCB(
         &pContext->VDevice,
+        pContext->dmaEnablerHandler,
         nr_ports * 2,
         VIOSerialGetQueueParamCallback,
         VIOSerialSetQueueCallback);
