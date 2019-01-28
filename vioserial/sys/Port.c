@@ -240,7 +240,8 @@ VIOSerialDiscardPortDataLocked(
         if(!NT_SUCCESS(status))
         {
            ++ret;
-           VIOSerialFreeBuffer(buf);
+           PPORTS_DEVICE pContext = GetPortsDevice(port->BusDevice);
+           VIOSerialFreeBuffer(&pContext->VDevice.VIODevice, buf);
         }
         buf = (PPORT_BUFFER)virtqueue_get_buf(vq, &len);
     }
@@ -1418,7 +1419,7 @@ NTSTATUS VIOSerialPortEvtDeviceD0Entry(
         return STATUS_NOT_FOUND;
     }
 
-    status = VIOSerialFillQueue(GetInQueue(port), port->InBufLock);
+    status = VIOSerialFillQueue(&pCtx->VDevice.VIODevice, GetInQueue(port), port->InBufLock);
     if (!NT_SUCCESS(status))
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP,

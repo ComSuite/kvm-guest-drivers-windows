@@ -162,6 +162,7 @@ NTSTATUS VirtIOWdfInitQueues(PVIRTIO_WDF_DRIVER pWdfDriver,
 }
 
 NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
+                               WDFDMAENABLER dmaEnabler,
                                ULONG nQueues,
                                VirtIOWdfGetQueueParamCallback pQueueParamFunc,
                                VirtIOWdfSetQueueCallback pSetQueueFunc)
@@ -177,6 +178,13 @@ NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
     if (!NT_SUCCESS(status)) {
         return status;
     }
+
+    pWdfDriver->VIODevice.dmaEnabler = dmaEnabler;
+    pWdfDriver->VIODevice.dma_map = NULL;
+    pWdfDriver->VIODevice.dma_items_max_count = 0;
+    pWdfDriver->VIODevice.dma_item_index = 0;
+    pWdfDriver->VIODevice.dma_first_index = 0;
+    pWdfDriver->VIODevice.dma_last_index = 0;
 
     /* let VirtioLib know how many queues we'll need */
     status = virtio_reserve_queue_memory(&pWdfDriver->VIODevice, nQueues);

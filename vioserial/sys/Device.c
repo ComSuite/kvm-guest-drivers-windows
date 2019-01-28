@@ -110,6 +110,9 @@ VIOSerialInitInterruptHandling(
     return status;
 }
 
+#define VIRTIOSER_MAXIMUM_TRANSFER_LENGTH    (10*4096)
+#define VIRTIOSER_DTE_ALIGNMENT_16      FILE_32_BYTE_ALIGNMENT 
+
 NTSTATUS
 VIOSerialEvtDeviceAdd(
     IN WDFDRIVER Driver,
@@ -193,6 +196,31 @@ VIOSerialEvtDeviceAdd(
     busInfo.BusNumber = pContext->DeviceId;
 
     WdfDeviceSetBusInformationForChildren(hDevice, &busInfo);
+
+    WDF_DMA_ENABLER_CONFIG dmaConfig;
+
+    WdfDeviceSetAlignmentRequirement(
+        hDevice,
+        VIRTIOSER_DTE_ALIGNMENT_16
+    );
+
+    WDF_DMA_ENABLER_CONFIG_INIT(
+        &dmaConfig,
+        WdfDmaProfileScatterGather64Duplex,
+        VIRTIOSER_MAXIMUM_TRANSFER_LENGTH
+    );
+
+    status = WdfDmaEnablerCreate(
+        hDevice,
+        &dmaConfig,
+        WDF_NO_OBJECT_ATTRIBUTES,
+        (WDFDMAENABLER*)&pContext->dmaEnablerHandler
+    );
+
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "WdfDmaEnablerCreate failed - 0x%x\n", status);
+        return status;
+    }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
     return status;
@@ -431,6 +459,7 @@ VIOSerialInitAllQueues(
 
     status = VirtIOWdfInitQueuesCB(
         &pContext->VDevice,
+        pContext->dmaEnablerHandler,
         nr_ports * 2,
         VIOSerialGetQueueParamCallback,
         VIOSerialSetQueueCallback);
@@ -458,6 +487,7 @@ VOID VIOSerialShutDownAllQueues(IN WDFOBJECT WdfDevice)
 
 NTSTATUS
 VIOSerialFillQueue(
+    IN VirtIODevice *device,
     IN struct virtqueue *vq,
     IN WDFSPINLOCK Lock
 )
@@ -469,7 +499,7 @@ VIOSerialFillQueue(
 
     for (;;)
     {
-        buf = VIOSerialAllocateBuffer(PAGE_SIZE);
+        buf = VIOSerialAllocateBuffer(device, PAGE_SIZE);
         if(buf == NULL)
         {
            TraceEvents(TRACE_LEVEL_ERROR, DBG_INIT, "VIOSerialAllocateBuffer failed\n");
@@ -483,7 +513,7 @@ VIOSerialFillQueue(
         status = VIOSerialAddInBuf(vq, buf);
         if(!NT_SUCCESS(status))
         {
-           VIOSerialFreeBuffer(buf);
+           VIOSerialFreeBuffer(device, buf);
            WdfSpinLockRelease(Lock);
            break;
         }
@@ -503,7 +533,7 @@ VIOSerialDrainQueue(
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INIT, "--> %s\n", __FUNCTION__);
     while (buf = (PPORT_BUFFER)virtqueue_detach_unused_buf(vq))
     {
-        VIOSerialFreeBuffer(buf);
+        VIOSerialFreeBuffer(vq->vdev, buf);
     }
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INIT, "<-- %s\n", __FUNCTION__);
 }
@@ -531,7 +561,7 @@ VIOSerialEvtDeviceD0Entry(
         status = VIOSerialInitAllQueues(Device);
         if (NT_SUCCESS(status) && pContext->isHostMultiport)
         {
-            status = VIOSerialFillQueue(pContext->c_ivq, pContext->CInVqLock);
+            status = VIOSerialFillQueue(&pContext->VDevice.VIODevice, pContext->c_ivq, pContext->CInVqLock);
         }
 
         if (!NT_SUCCESS(status))

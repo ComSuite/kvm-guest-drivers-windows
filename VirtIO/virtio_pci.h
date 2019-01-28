@@ -233,6 +233,19 @@ struct virtio_device_ops
     void (*delete_queue)(VirtIOQueueInfo *info);
 };
 
+struct dma_item
+{
+    void *dma_common_buffer;
+    void *dma_virtual_address;
+    PHYSICAL_ADDRESS dma_physical_address;
+    size_t size;
+    LONGLONG prev;
+    LONGLONG next;
+};
+
+#define DMA_BUFFER_QUANT_SIZE   (PAGE_SIZE / sizeof(struct dma_item))
+#define VIRTIO_DMA_MEMORY_TAG   '7DRV'
+
 struct virtio_device
 {
     // the I/O port BAR of the PCI device (legacy virtio devices only)
@@ -268,6 +281,13 @@ struct virtio_device
 
     // maximum number of virtqueues that fit in the memory block pointed to by info
     ULONG maxQueues;
+
+    void *dmaEnabler;
+    struct dma_item *dma_map;
+    LONGLONG dma_items_max_count; //size of array
+    LONGLONG dma_item_index; //first free item in dma_map; initially 0
+    LONGLONG dma_first_index; //lowerst logical
+    LONGLONG dma_last_index; // biggest logical
 
     // points to inline_info if not more than MAX_QUEUES_PER_DEVICE_DEFAULT queues
     // are used, or to an external allocation otherwise

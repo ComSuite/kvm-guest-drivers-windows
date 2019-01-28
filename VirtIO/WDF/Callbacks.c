@@ -34,47 +34,202 @@
 #include "VirtIOWdf.h"
 #include "private.h"
 
+static BOOLEAN mem_realloc_buffer(VirtIODevice *device)
+{
+    struct dma_item *prev = device->dma_map;
+    device->dma_map = ExAllocatePoolWithTag(
+        NonPagedPool,
+        (device->dma_items_max_count + DMA_BUFFER_QUANT_SIZE) * sizeof(struct dma_item),
+        VIRTIO_DMA_MEMORY_TAG);
+
+    if (device->dma_map != NULL)
+    {
+        RtlZeroMemory(device->dma_map, (device->dma_items_max_count + DMA_BUFFER_QUANT_SIZE) * sizeof(struct dma_item));
+        if (prev != NULL)
+        {
+            RtlCopyMemory(device->dma_map, prev, device->dma_items_max_count * sizeof(struct dma_item));
+            ExFreePoolWithTag(prev, VIRTIO_DMA_MEMORY_TAG);
+        }
+        else
+        {
+            device->dma_map[0].prev = -1;
+            device->dma_map[0].next = 0;
+        }
+
+        device->dma_items_max_count = device->dma_items_max_count + DMA_BUFFER_QUANT_SIZE;
+        return TRUE;
+        }
+    else
+    {
+        device->dma_map = prev;
+        return FALSE;
+    }
+    }
+
+static LONGLONG dma_mem_find_next_item(VirtIODevice *device, void* virt)
+{
+    if (device->dma_first_index == device->dma_last_index)
+        return 0;
+
+    LONGLONG i = device->dma_first_index;
+    while (i >= 0) //device->dma_map[i].next && i < device->dma_item_index && 
+    {
+        if (device->dma_map[i].dma_virtual_address > virt)
+        {
+            return i;
+        }
+
+        i = device->dma_map[i].next;
+    }
+
+    return -1;
+}
+
+static LONGLONG dma_mem_get_prev_item(VirtIODevice *device, LONGLONG next)
+{
+    if (next >= 0)
+        return device->dma_map[next].prev;
+    else
+        return -1;
+
+}
+
+static LONGLONG get_dma_map_get_item_index(VirtIODevice *device, void *virt)
+{
+    LONGLONG i = device->dma_first_index;
+    while (i >= 0) //i < device->dma_last_index && 
+    {
+        if (virt >= device->dma_map[i].dma_virtual_address && (u8*)virt < ((u8*)device->dma_map[i].dma_virtual_address + device->dma_map[i].size))
+        {
+            return i;
+        }
+        else
+            i = device->dma_map[i].next;
+    }
+
+    return -1;
+}
+
+static WDFCOMMONBUFFER get_common_buffer(VirtIODevice *device, void *virt, BOOLEAN clear)
+{
+    if (device == NULL || virt == NULL)
+        return NULL;
+
+    WDFCOMMONBUFFER buffer = NULL;
+
+    LONGLONG i = get_dma_map_get_item_index(device, virt);
+    if (i >= 0)
+    {
+        buffer = device->dma_map[i].dma_common_buffer;
+        if (clear)
+        {
+            RtlZeroMemory(&device->dma_map[i], sizeof(struct dma_item));
+            device->dma_map[i].prev = -1;
+            device->dma_map[i].next = device->dma_item_index;
+            device->dma_item_index = i;
+        }
+    }
+
+    return buffer;
+}
+
 static void *mem_alloc_contiguous_pages(void *context, size_t size)
 {
-    PHYSICAL_ADDRESS HighestAcceptable;
-    void *ret;
+    void *ret = NULL;
+    NTSTATUS status;
+    WDFDMAENABLER dmaEnabler = NULL;
+    WDFCOMMONBUFFER buffer = NULL;
+    VirtIODevice *device = (VirtIODevice*)context;
 
-    UNREFERENCED_PARAMETER(context);
-
-    HighestAcceptable.QuadPart = 0xFFFFFFFFFF;
-#if defined(NTDDI_WIN8) && (NTDDI_VERSION >= NTDDI_WIN8)
+    if (device != NULL)
     {
-        PHYSICAL_ADDRESS Zero = { 0 };
-        ret = MmAllocateContiguousNodeMemory(
-            size,
-            Zero,
-            HighestAcceptable,
-            Zero,
-            PAGE_READWRITE,
-            MM_ANY_NODE_OK);
+        dmaEnabler = device->dmaEnabler;
+        if (dmaEnabler != NULL)
+        {
+            if (device->dma_item_index >= device->dma_items_max_count)
+            {
+                mem_realloc_buffer(device);
+            }
+
+            status = WdfCommonBufferCreate(dmaEnabler, size, WDF_NO_OBJECT_ATTRIBUTES, &buffer);
+            if (device->dma_item_index < device->dma_items_max_count)
+            {
+                if (status == STATUS_SUCCESS)
+                {
+                    LONGLONG cur = device->dma_item_index;
+                    LONGLONG next_free = -1;
+                    if (device->dma_map[cur].prev == -1)
+                        device->dma_item_index = device->dma_map[cur].next;
+                    else
+                        device->dma_item_index++;
+
+                    ret = WdfCommonBufferGetAlignedVirtualAddress(buffer);
+                    device->dma_map[cur].dma_common_buffer = buffer;
+                    device->dma_map[cur].dma_virtual_address = ret;
+                    device->dma_map[cur].dma_physical_address = WdfCommonBufferGetAlignedLogicalAddress(buffer);
+                    device->dma_map[cur].size = size;
+
+                    //sort
+                    LONGLONG next = dma_mem_find_next_item(device, ret);
+                    LONGLONG prev = dma_mem_get_prev_item(device, next);
+
+                    device->dma_map[cur].next = next;
+                    device->dma_map[cur].prev = prev;
+
+                    if (next >= 0)
+                    {
+                        device->dma_map[next].prev = cur;
+                    }
+                    else //this is last item in sorted array
+                    {
+                        device->dma_last_index = cur;
+                    }
+
+                    if (prev >= 0)
+                    {
+                        device->dma_map[prev].next = cur;
+                    }
+                    else //this is first item in sorted array
+                    {
+                        device->dma_first_index = cur;
+                    }
+                }
+            }
+        }
     }
-#else
-    ret = MmAllocateContiguousMemory(size, HighestAcceptable);
-#endif
-    if (ret != NULL) {
+
+    if (ret != NULL)
+    {
         RtlZeroMemory(ret, size);
     }
+
     return ret;
 }
 
 static void mem_free_contiguous_pages(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
-
-    MmFreeContiguousMemory(virt);
+    if (context != NULL)
+    {
+        WDFCOMMONBUFFER buffer = get_common_buffer((VirtIODevice *)context, virt, TRUE);
+        if (buffer != NULL)
+        {
+            WdfObjectDelete(buffer);
+        }
+    }
 }
 
 static ULONGLONG mem_get_physical_address(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
+    VirtIODevice *device = (VirtIODevice*)context;
 
-    PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(virt);
-    return pa.QuadPart;
+    LONGLONG i = get_dma_map_get_item_index(device, virt);
+    if (i >= 0)
+    {
+        LONGLONG delta = (u8*)virt - (u8*)device->dma_map[i].dma_virtual_address;
+        return device->dma_map[i].dma_physical_address.QuadPart + delta;
+    }
+
+    return 0;
 }
 
 static void *mem_alloc_nonpaged_block(void *context, size_t size)

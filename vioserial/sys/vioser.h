@@ -101,6 +101,8 @@ typedef struct _tagPortDevice
 
     BOOLEAN             DeviceOK;
     UINT                DeviceId;
+
+    WDFDMAENABLER       dmaEnablerHandler;
 } PORTS_DEVICE, *PPORTS_DEVICE;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(PORTS_DEVICE, GetPortsDevice)
@@ -185,6 +187,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DRIVER_CONTEXT, GetDriverContext)
 
 NTSTATUS
 VIOSerialFillQueue(
+    IN VirtIODevice *device,
     IN struct virtqueue *vq,
     IN WDFSPINLOCK Lock
 );
@@ -226,11 +229,13 @@ VIOSerialFillReadBufLocked(
 
 PPORT_BUFFER
 VIOSerialAllocateBuffer(
+    IN VirtIODevice *device,
     IN size_t buf_size
 );
 
 VOID
 VIOSerialFreeBuffer(
+    IN VirtIODevice *device,
     IN PPORT_BUFFER buf
 );
 

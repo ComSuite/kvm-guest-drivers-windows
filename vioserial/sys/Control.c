@@ -88,7 +88,7 @@ VIOSerialCtrlWorkHandler(
         if (!NT_SUCCESS(status))
         {
            TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "%s::%d Error adding buffer to queue\n", __FUNCTION__, __LINE__);
-           VIOSerialFreeBuffer(buf);
+           VIOSerialFreeBuffer(&pContext->VDevice.VIODevice, buf);
         }
     }
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_PNP, "<-- %s\n", __FUNCTION__);

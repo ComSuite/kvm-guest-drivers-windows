@@ -98,6 +98,7 @@ NTSTATUS VirtIOWdfInitQueues(PVIRTIO_WDF_DRIVER pWdfDriver,
                              struct virtqueue **pQueues,
                              PVIRTIO_WDF_QUEUE_PARAM pQueueParams);
 NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
+                               WDFDMAENABLER dmaEnabler,
                                ULONG nQueues,
                                VirtIOWdfGetQueueParamCallback pQueueParamFunc,
                                VirtIOWdfSetQueueCallback pSetQueueFunc);

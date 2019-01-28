@@ -10,6 +10,7 @@
 
 PPORT_BUFFER
 VIOSerialAllocateBuffer(
+    IN VirtIODevice *device,
     IN size_t buf_size
 )
 {
@@ -17,28 +18,20 @@ VIOSerialAllocateBuffer(
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_QUEUEING, "--> %s\n", __FUNCTION__);
 
-    buf = ExAllocatePoolWithTag(
-                                 NonPagedPool,
-                                 sizeof(PORT_BUFFER),
-                                 VIOSERIAL_DRIVER_MEMORY_TAG
-                                 );
+    buf = device->system->mem_alloc_contiguous_pages(device, sizeof(PORT_BUFFER));
     if (buf == NULL)
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_QUEUEING, "ExAllocatePoolWithTag failed, %s::%d\n", __FUNCTION__, __LINE__);
         return NULL;
     }
-    buf->va_buf = ExAllocatePoolWithTag(
-                                 NonPagedPool,
-                                 buf_size,
-                                 VIOSERIAL_DRIVER_MEMORY_TAG
-                                 );
+    buf->va_buf = device->system->mem_alloc_contiguous_pages(device, buf_size);
     if(buf->va_buf == NULL)
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_QUEUEING, "ExAllocatePoolWithTag failed, %s::%d\n", __FUNCTION__, __LINE__);
-        ExFreePoolWithTag(buf, VIOSERIAL_DRIVER_MEMORY_TAG);
+        device->system->mem_free_contiguous_pages(device, buf);
         return NULL;
     }
-    buf->pa_buf = MmGetPhysicalAddress(buf->va_buf);
+    buf->pa_buf.QuadPart = device->system->mem_get_physical_address(device, buf->va_buf);
     buf->len = 0;
     buf->offset = 0;
     buf->size = buf_size;
@@ -108,6 +101,7 @@ size_t VIOSerialSendBuffers(IN PVIOSERIAL_PORT Port,
 
 VOID
 VIOSerialFreeBuffer(
+    IN VirtIODevice *device,
     IN PPORT_BUFFER buf
 )
 {
@@ -115,10 +109,10 @@ VIOSerialFreeBuffer(
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_QUEUEING, "--> %s  buf = %p, buf->va_buf = %p\n", __FUNCTION__, buf, buf->va_buf);
     if (buf->va_buf)
     {
-        ExFreePoolWithTag(buf->va_buf, VIOSERIAL_DRIVER_MEMORY_TAG);
+        device->system->mem_free_contiguous_pages(device, buf->va_buf);
         buf->va_buf = NULL;
     }
-    ExFreePoolWithTag(buf, VIOSERIAL_DRIVER_MEMORY_TAG);
+    device->system->mem_free_contiguous_pages(device, buf);
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_QUEUEING, "<-- %s\n", __FUNCTION__);
 }
 
