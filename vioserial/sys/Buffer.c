@@ -10,35 +10,35 @@
 
 PPORT_BUFFER
 VIOSerialAllocateBuffer(
+    WDFDMAENABLER dma_enabler,
     IN size_t buf_size
 )
 {
     PPORT_BUFFER buf;
+    WDFCOMMONBUFFER buffer;
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_QUEUEING, "--> %s\n", __FUNCTION__);
 
     buf = ExAllocatePoolWithTag(
-                                 NonPagedPool,
-                                 sizeof(PORT_BUFFER),
-                                 VIOSERIAL_DRIVER_MEMORY_TAG
-                                 );
+                        NonPagedPool,
+                        sizeof(PORT_BUFFER),
+                        VIOSERIAL_DRIVER_MEMORY_TAG
+                        );
     if (buf == NULL)
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_QUEUEING, "ExAllocatePoolWithTag failed, %s::%d\n", __FUNCTION__, __LINE__);
         return NULL;
     }
-    buf->va_buf = ExAllocatePoolWithTag(
-                                 NonPagedPool,
-                                 buf_size,
-                                 VIOSERIAL_DRIVER_MEMORY_TAG
-                                 );
-    if(buf->va_buf == NULL)
+
+    if (WdfCommonBufferCreate(dma_enabler, buf_size, WDF_NO_OBJECT_ATTRIBUTES, &buffer) != STATUS_SUCCESS)
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_QUEUEING, "ExAllocatePoolWithTag failed, %s::%d\n", __FUNCTION__, __LINE__);
         ExFreePoolWithTag(buf, VIOSERIAL_DRIVER_MEMORY_TAG);
         return NULL;
     }
-    buf->pa_buf = MmGetPhysicalAddress(buf->va_buf);
+    buf->va_cmn_buf = buffer;
+    buf->va_buf = WdfCommonBufferGetAlignedVirtualAddress(buffer);
+    buf->pa_buf = WdfCommonBufferGetAlignedLogicalAddress(buffer);
     buf->len = 0;
     buf->offset = 0;
     buf->size = buf_size;
@@ -115,7 +115,7 @@ VIOSerialFreeBuffer(
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_QUEUEING, "--> %s  buf = %p, buf->va_buf = %p\n", __FUNCTION__, buf, buf->va_buf);
     if (buf->va_buf)
     {
-        ExFreePoolWithTag(buf->va_buf, VIOSERIAL_DRIVER_MEMORY_TAG);
+        WdfObjectDelete(buf->va_cmn_buf);
         buf->va_buf = NULL;
     }
     ExFreePoolWithTag(buf, VIOSERIAL_DRIVER_MEMORY_TAG);

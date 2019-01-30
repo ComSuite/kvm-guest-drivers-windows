@@ -121,6 +121,7 @@ DEFINE_GUID(GUID_DEVCLASS_PORT_DEVICE,
 
 typedef struct _tagPortBuffer
 {
+    WDFCOMMONBUFFER     va_cmn_buf;
     PHYSICAL_ADDRESS    pa_buf;
     PVOID               va_buf;
     size_t              size;
@@ -228,6 +229,7 @@ VIOSerialFillReadBufLocked(
 
 PPORT_BUFFER
 VIOSerialAllocateBuffer(
+    IN WDFDMAENABLER dma_enabler,
     IN size_t buf_size
 );
 

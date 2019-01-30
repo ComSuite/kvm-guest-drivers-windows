@@ -498,7 +498,7 @@ VIOSerialFillQueue(
 
     for (;;)
     {
-        buf = VIOSerialAllocateBuffer(PAGE_SIZE);
+        buf = VIOSerialAllocateBuffer(vq->vdev->dma.dma_enabler, PAGE_SIZE);
         if(buf == NULL)
         {
            TraceEvents(TRACE_LEVEL_ERROR, DBG_INIT, "VIOSerialAllocateBuffer failed\n");
