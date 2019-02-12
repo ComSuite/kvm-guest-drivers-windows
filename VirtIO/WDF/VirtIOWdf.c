@@ -173,10 +173,7 @@ void VirtIOWdfInitDmaQueues(struct virtio_dma *dma,
                             memoryTag);
     RtlZeroMemory(dma->dma_map, nQueues * sizeof(struct virtio_dma_item));
     dma->memory_tag = memoryTag;
-    dma->max_index = nQueues;
-    dma->last_index = 0;
-    dma->free_index = -1;
-
+    dma->count = nQueues;
 }
 
 NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,

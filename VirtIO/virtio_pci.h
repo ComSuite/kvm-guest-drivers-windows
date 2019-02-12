@@ -233,13 +233,15 @@ struct virtio_device_ops
     void (*delete_queue)(VirtIOQueueInfo *info);
 };
 
+#define VIRTIOSER_MAXIMUM_TRANSFER_LENGTH    (10*4096)
+
 struct virtio_dma_item
 {
     void *dma_common_buffer;
     void *dma_virtual_address;
     PHYSICAL_ADDRESS dma_physical_address;
     size_t size;
-    u8 used;
+    BOOLEAN used;
 };
 
 struct virtio_dma
@@ -247,9 +249,7 @@ struct virtio_dma
     void *dma_enabler;
     ULONG memory_tag;
     struct virtio_dma_item *dma_map;
-    ULONG max_index;
-    ULONG last_index;
-    LONGLONG free_index;
+    ULONG count;
 };
 
 struct virtio_device

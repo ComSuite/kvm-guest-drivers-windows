@@ -110,9 +110,6 @@ VIOSerialInitInterruptHandling(
     return status;
 }
 
-#define VIRTIOSER_MAXIMUM_TRANSFER_LENGTH    (10*4096)
-#define VIRTIOSER_DTE_ALIGNMENT_16      FILE_32_BYTE_ALIGNMENT 
-
 NTSTATUS
 VIOSerialEvtDeviceAdd(
     IN WDFDRIVER Driver,
@@ -201,7 +198,7 @@ VIOSerialEvtDeviceAdd(
 
     WdfDeviceSetAlignmentRequirement(
         hDevice,
-        VIRTIOSER_DTE_ALIGNMENT_16
+        FILE_32_BYTE_ALIGNMENT
     );
 
     WDF_DMA_ENABLER_CONFIG_INIT(
@@ -498,7 +495,7 @@ VIOSerialFillQueue(
 
     for (;;)
     {
-        buf = VIOSerialAllocateBuffer(PAGE_SIZE);
+        buf = VIOSerialAllocateBuffer(vq->vdev->dma.dma_enabler, PAGE_SIZE);
         if(buf == NULL)
         {
            TraceEvents(TRACE_LEVEL_ERROR, DBG_INIT, "VIOSerialAllocateBuffer failed\n");

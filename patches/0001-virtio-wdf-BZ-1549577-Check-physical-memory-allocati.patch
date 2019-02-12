@@ -1,0 +1,407 @@
+From 9ed10ed072450880cfbb8f5e63e2fda81a5b20ae Mon Sep 17 00:00:00 2001
+From: Alexander Epstine <alexander.epstine@daynix.com>
+Date: Tue, 8 Jan 2019 15:18:26 +0200
+Subject: [DMA API for queues allocation] virtio-wdf: BZ#1549577: Check
+ physical memory allocation in virtio library for NULL
+
+virtio-wdf: BZ#1549577: Support DMA API for queus
+
+Signed-off-by: Alexander Epstine <alexander.epstine@daynix.com>
+---
+ VirtIO/WDF/Callbacks.c       | 134 +++++++++++++++++++++++++++++++++++--------
+ VirtIO/WDF/VirtIOWdf.c       |  26 +++++++++
+ VirtIO/WDF/VirtIOWdf.h       |   1 +
+ VirtIO/virtio_pci.h          |  21 +++++++
+ vioserial/sys/Device.c       |  29 ++++++++++
+ vioserial/sys/Port.c         |   1 +
+ vioserial/sys/trace.h        |   2 +-
+ vioserial/sys/utils.c        |   2 +-
+ vioserial/sys/vioser.h       |   2 +
+ vioserial/sys/vioser.vcxproj |   2 +-
+ 10 files changed, 194 insertions(+), 26 deletions(-)
+
+diff --git a/VirtIO/WDF/Callbacks.c b/VirtIO/WDF/Callbacks.c
+index e0030ab..3a598e4 100644
+--- a/VirtIO/WDF/Callbacks.c
++++ b/VirtIO/WDF/Callbacks.c
+@@ -34,45 +34,133 @@
+ #include "VirtIOWdf.h"
+ #include "private.h"
+ 
++
++static LONGLONG get_dma_map_get_item_index(struct virtio_dma *dma, void *virt)
++{
++    for (ULONG i = 0; i < dma->last_index; i++)
++    {
++        if (virt >= dma->dma_map[i].dma_virtual_address && (u8*)virt < ((u8*)dma->dma_map[i].dma_virtual_address + dma->dma_map[i].size))
++        {
++            return i;
++        }
++    }
++
++    return -1;
++}
++
++static LONGLONG get_free_item_index(struct virtio_dma *dma)
++{
++    LONGLONG index = -1;
++
++    if (dma->free_index >= 0)
++    {
++        index = dma->free_index;
++        for (LONGLONG i = index + 1; i < dma->last_index; i++)
++        {
++            if (dma->dma_map[i].used == 0)
++            {
++                dma->free_index = i;
++                return index;
++            }
++        }
++        dma->free_index = -1;
++    }
++    else
++    {
++        if (dma->last_index < dma->max_index)
++        {
++            index = dma->last_index;
++            dma->last_index++;
++        }
++    }
++
++    return index;
++}
++
++static WDFCOMMONBUFFER get_common_buffer(struct virtio_dma *dma, void *virt, BOOLEAN clear)
++{
++    if (dma == NULL || virt == NULL)
++        return NULL;
++
++    WDFCOMMONBUFFER buffer = NULL;
++
++    LONGLONG i = get_dma_map_get_item_index(dma, virt);
++    if (i >= 0)
++    {
++        buffer = dma->dma_map[i].dma_common_buffer;
++        if (clear)
++        {
++            RtlZeroMemory(&dma->dma_map[i], sizeof(struct virtio_dma_item));
++            if (dma->free_index < 0 || i < dma->free_index)
++                dma->free_index = i;
++        }
++    }
++
++    return buffer;
++}
++
+ static void *mem_alloc_contiguous_pages(void *context, size_t size)
+ {
+-    PHYSICAL_ADDRESS HighestAcceptable;
+-    void *ret;
++    void *ret = NULL;
++    NTSTATUS status;
++    WDFDMAENABLER dma_enabler = NULL;
++    WDFCOMMONBUFFER buffer = NULL;
++    VirtIODevice *device = (VirtIODevice*)context;
+ 
+-    UNREFERENCED_PARAMETER(context);
++    if (device != NULL)
++    {
++        dma_enabler = device->dma.dma_enabler;
++        if (dma_enabler != NULL)
++        {
++            LONGLONG i = get_free_item_index(&device->dma);
++            if (i >= 0)
++            {
++                status = WdfCommonBufferCreate(dma_enabler, size, WDF_NO_OBJECT_ATTRIBUTES, &buffer);
++                if (status == STATUS_SUCCESS)
++                {
++                    ret = WdfCommonBufferGetAlignedVirtualAddress(buffer);
++                    device->dma.dma_map[i].dma_common_buffer = buffer;
++                    device->dma.dma_map[i].dma_virtual_address = ret;
++                    device->dma.dma_map[i].dma_physical_address = WdfCommonBufferGetAlignedLogicalAddress(buffer);
++                    device->dma.dma_map[i].size = size;
++                    device->dma.dma_map[i].used = 1;
++                }
++            }
++        }
++    }
+ 
+-    HighestAcceptable.QuadPart = 0xFFFFFFFFFF;
+-#if defined(NTDDI_WIN8) && (NTDDI_VERSION >= NTDDI_WIN8)
++    if (ret != NULL)
+     {
+-        PHYSICAL_ADDRESS Zero = { 0 };
+-        ret = MmAllocateContiguousNodeMemory(
+-            size,
+-            Zero,
+-            HighestAcceptable,
+-            Zero,
+-            PAGE_READWRITE,
+-            MM_ANY_NODE_OK);
++        RtlZeroMemory(ret, size);
+     }
+-#else
+-    ret = MmAllocateContiguousMemory(size, HighestAcceptable);
+-#endif
+-    RtlZeroMemory(ret, size);
++
+     return ret;
+ }
+ 
+ static void mem_free_contiguous_pages(void *context, void *virt)
+ {
+-    UNREFERENCED_PARAMETER(context);
+-
+-    MmFreeContiguousMemory(virt);
++    if (context != NULL)
++    {
++        WDFCOMMONBUFFER buffer = get_common_buffer(&((VirtIODevice *)context)->dma, virt, TRUE);
++        if (buffer != NULL)
++        {
++            WdfObjectDelete(buffer);
++        }
++    }
+ }
+ 
+ static ULONGLONG mem_get_physical_address(void *context, void *virt)
+ {
+-    UNREFERENCED_PARAMETER(context);
++    VirtIODevice *device = (VirtIODevice*)context;
++
++    LONGLONG i = get_dma_map_get_item_index(&device->dma, virt);
++    if (i >= 0)
++    {
++        LONGLONG delta = (u8*)virt - (u8*)device->dma.dma_map[i].dma_virtual_address;
++        return device->dma.dma_map[i].dma_physical_address.QuadPart + delta;
++    }
+ 
+-    PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(virt);
+-    return pa.QuadPart;
++    return 0;
+ }
+ 
+ static void *mem_alloc_nonpaged_block(void *context, size_t size)
+diff --git a/VirtIO/WDF/VirtIOWdf.c b/VirtIO/WDF/VirtIOWdf.c
+index 2724fa1..6ca33a5 100644
+--- a/VirtIO/WDF/VirtIOWdf.c
++++ b/VirtIO/WDF/VirtIOWdf.c
+@@ -161,7 +161,26 @@ NTSTATUS VirtIOWdfInitQueues(PVIRTIO_WDF_DRIVER pWdfDriver,
+     return status;
+ }
+ 
++void VirtIOWdfInitDmaQueues(struct virtio_dma *dma, 
++                            WDFDMAENABLER dmaEnabler,
++                            ULONG memoryTag,
++                            ULONG nQueues)
++{
++    dma->dma_enabler = dmaEnabler;
++    dma->dma_map = ExAllocatePoolWithTag(
++                            NonPagedPool,
++                            nQueues * sizeof(struct virtio_dma_item),
++                            memoryTag);
++    RtlZeroMemory(dma->dma_map, nQueues * sizeof(struct virtio_dma_item));
++    dma->memory_tag = memoryTag;
++    dma->max_index = nQueues;
++    dma->last_index = 0;
++    dma->free_index = -1;
++
++}
++
+ NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
++                               WDFDMAENABLER dmaEnabler,
+                                ULONG nQueues,
+                                VirtIOWdfGetQueueParamCallback pQueueParamFunc,
+                                VirtIOWdfSetQueueCallback pSetQueueFunc)
+@@ -178,6 +197,8 @@ NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
+         return status;
+     }
+ 
++    VirtIOWdfInitDmaQueues(&pWdfDriver->VIODevice.dma, dmaEnabler, pWdfDriver->MemoryTag, nQueues * 2);
++
+     /* let VirtioLib know how many queues we'll need */
+     status = virtio_reserve_queue_memory(&pWdfDriver->VIODevice, nQueues);
+     if (!NT_SUCCESS(status)) {
+@@ -251,6 +272,11 @@ NTSTATUS VirtIOWdfDestroyQueues(PVIRTIO_WDF_DRIVER pWdfDriver)
+     virtio_device_reset(&pWdfDriver->VIODevice);
+     virtio_delete_queues(&pWdfDriver->VIODevice);
+ 
++    if (pWdfDriver->VIODevice.dma.dma_map != NULL)
++    {
++        ExFreePoolWithTag(pWdfDriver->VIODevice.dma.dma_map, pWdfDriver->VIODevice.dma.memory_tag);
++    }
++
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/VirtIO/WDF/VirtIOWdf.h b/VirtIO/WDF/VirtIOWdf.h
+index 130553a..3fcb174 100644
+--- a/VirtIO/WDF/VirtIOWdf.h
++++ b/VirtIO/WDF/VirtIOWdf.h
+@@ -98,6 +98,7 @@ NTSTATUS VirtIOWdfInitQueues(PVIRTIO_WDF_DRIVER pWdfDriver,
+                              struct virtqueue **pQueues,
+                              PVIRTIO_WDF_QUEUE_PARAM pQueueParams);
+ NTSTATUS VirtIOWdfInitQueuesCB(PVIRTIO_WDF_DRIVER pWdfDriver,
++                               WDFDMAENABLER dmaEnabler,
+                                ULONG nQueues,
+                                VirtIOWdfGetQueueParamCallback pQueueParamFunc,
+                                VirtIOWdfSetQueueCallback pSetQueueFunc);
+diff --git a/VirtIO/virtio_pci.h b/VirtIO/virtio_pci.h
+index bc16dcd..ec6d572 100644
+--- a/VirtIO/virtio_pci.h
++++ b/VirtIO/virtio_pci.h
+@@ -233,6 +233,25 @@ struct virtio_device_ops
+     void (*delete_queue)(VirtIOQueueInfo *info);
+ };
+ 
++struct virtio_dma_item
++{
++    void *dma_common_buffer;
++    void *dma_virtual_address;
++    PHYSICAL_ADDRESS dma_physical_address;
++    size_t size;
++    u8 used;
++};
++
++struct virtio_dma
++{
++    void *dma_enabler;
++    ULONG memory_tag;
++    struct virtio_dma_item *dma_map;
++    ULONG max_index;
++    ULONG last_index;
++    LONGLONG free_index;
++};
++
+ struct virtio_device
+ {
+     // the I/O port BAR of the PCI device (legacy virtio devices only)
+@@ -269,6 +288,8 @@ struct virtio_device
+     // maximum number of virtqueues that fit in the memory block pointed to by info
+     ULONG maxQueues;
+ 
++    struct virtio_dma dma;
++
+     // points to inline_info if not more than MAX_QUEUES_PER_DEVICE_DEFAULT queues
+     // are used, or to an external allocation otherwise
+     VirtIOQueueInfo *info;
+diff --git a/vioserial/sys/Device.c b/vioserial/sys/Device.c
+index 029801d..3d35b9f 100755
+--- a/vioserial/sys/Device.c
++++ b/vioserial/sys/Device.c
+@@ -110,6 +110,9 @@ VIOSerialInitInterruptHandling(
+     return status;
+ }
+ 
++#define VIRTIOSER_MAXIMUM_TRANSFER_LENGTH    (10*4096)
++#define VIRTIOSER_DTE_ALIGNMENT_16      FILE_32_BYTE_ALIGNMENT 
++
+ NTSTATUS
+ VIOSerialEvtDeviceAdd(
+     IN WDFDRIVER Driver,
+@@ -194,6 +197,31 @@ VIOSerialEvtDeviceAdd(
+ 
+     WdfDeviceSetBusInformationForChildren(hDevice, &busInfo);
+ 
++    WDF_DMA_ENABLER_CONFIG dmaConfig;
++
++    WdfDeviceSetAlignmentRequirement(
++        hDevice,
++        VIRTIOSER_DTE_ALIGNMENT_16
++    );
++
++    WDF_DMA_ENABLER_CONFIG_INIT(
++        &dmaConfig,
++        WdfDmaProfileScatterGather64Duplex,
++        VIRTIOSER_MAXIMUM_TRANSFER_LENGTH
++    );
++
++    status = WdfDmaEnablerCreate(
++        hDevice,
++        &dmaConfig,
++        WDF_NO_OBJECT_ATTRIBUTES,
++        (WDFDMAENABLER*)&pContext->dmaEnablerHandler
++    );
++
++    if (!NT_SUCCESS(status)) {
++        TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "WdfDmaEnablerCreate failed - 0x%x\n", status);
++        return status;
++    }
++
+     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
+     return status;
+ }
+@@ -431,6 +459,7 @@ VIOSerialInitAllQueues(
+ 
+     status = VirtIOWdfInitQueuesCB(
+         &pContext->VDevice,
++        pContext->dmaEnablerHandler,
+         nr_ports * 2,
+         VIOSerialGetQueueParamCallback,
+         VIOSerialSetQueueCallback);
+diff --git a/vioserial/sys/Port.c b/vioserial/sys/Port.c
+index 8829d3b..697ba8b 100644
+--- a/vioserial/sys/Port.c
++++ b/vioserial/sys/Port.c
+@@ -240,6 +240,7 @@ VIOSerialDiscardPortDataLocked(
+         if(!NT_SUCCESS(status))
+         {
+            ++ret;
++           PPORTS_DEVICE pContext = GetPortsDevice(port->BusDevice);
+            VIOSerialFreeBuffer(buf);
+         }
+         buf = (PPORT_BUFFER)virtqueue_get_buf(vq, &len);
+diff --git a/vioserial/sys/trace.h b/vioserial/sys/trace.h
+index 6785da9..a022586 100755
+--- a/vioserial/sys/trace.h
++++ b/vioserial/sys/trace.h
+@@ -31,7 +31,7 @@
+ #if ((OSVERSION_MASK & NTDDI_VERSION) > NTDDI_VISTA)
+ #define EVENT_TRACING
+ #endif
+-
++#undef EVENT_TRACING
+ #if !defined(EVENT_TRACING)
+ 
+ extern ULONG driverDebugFlags;
+diff --git a/vioserial/sys/utils.c b/vioserial/sys/utils.c
+index 20c72de..49cfd15 100755
+--- a/vioserial/sys/utils.c
++++ b/vioserial/sys/utils.c
+@@ -112,7 +112,7 @@ void InitializeDebugPrints(IN PDRIVER_OBJECT  DriverObject, PUNICODE_STRING Regi
+     UNREFERENCED_PARAMETER(RegistryPath);
+ 
+     bDebugPrint = 1;
+-    driverDebugLevel = TRACE_LEVEL_FATAL;
++    driverDebugLevel = TRACE_LEVEL_RESERVED9;//TRACE_LEVEL_FATAL;
+     virtioDebugLevel = -1;
+ }
+ 
+diff --git a/vioserial/sys/vioser.h b/vioserial/sys/vioser.h
+index 4b969b2..7d3a56e 100755
+--- a/vioserial/sys/vioser.h
++++ b/vioserial/sys/vioser.h
+@@ -101,6 +101,8 @@ typedef struct _tagPortDevice
+ 
+     BOOLEAN             DeviceOK;
+     UINT                DeviceId;
++
++    WDFDMAENABLER       dmaEnablerHandler;
+ } PORTS_DEVICE, *PPORTS_DEVICE;
+ 
+ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(PORTS_DEVICE, GetPortsDevice)
+diff --git a/vioserial/sys/vioser.vcxproj b/vioserial/sys/vioser.vcxproj
+index 59d45e7..02ee3a6 100755
+--- a/vioserial/sys/vioser.vcxproj
++++ b/vioserial/sys/vioser.vcxproj
+@@ -231,7 +231,7 @@
+       <WppKernelMode>true</WppKernelMode>
+       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);..\..\VirtIO;..\..\VirtIO\WDF</AdditionalIncludeDirectories>
+       <WarningLevel>Level3</WarningLevel>
+-      <PreprocessorDefinitions>%(PreprocessorDefinitions);POOL_NX_OPTIN=1</PreprocessorDefinitions>
++      <PreprocessorDefinitions>%(PreprocessorDefinitions);POOL_NX_OPTIN=1;PRINT_DEBUG</PreprocessorDefinitions>
+       <DisableSpecificWarnings>4603;4627;4986;4987;4996;6387;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+     </ClCompile>
+     <Link>
+-- 
+2.7.0.windows.1
+

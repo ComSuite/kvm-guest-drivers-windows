@@ -1,0 +1,26 @@
+From 9ed10ed072450880cfbb8f5e63e2fda81a5b20ae Mon Sep 17 00:00:00 2001
+From: Alexander Epstine <alexander.epstine@daynix.com>
+Date: Thu, 31 Jan 2019 11:51:36 +0200
+Subject: [DMA API for queues allocation] DMA API for queues allocation
+
+*** BLURB HERE ***
+
+Alexander Epstine (1):
+  virtio-wdf: BZ#1549577: Check physical memory allocation in virtio
+    library for NULL
+
+ VirtIO/WDF/Callbacks.c       | 134 +++++++++++++++++++++++++++++++++++--------
+ VirtIO/WDF/VirtIOWdf.c       |  26 +++++++++
+ VirtIO/WDF/VirtIOWdf.h       |   1 +
+ VirtIO/virtio_pci.h          |  21 +++++++
+ vioserial/sys/Device.c       |  29 ++++++++++
+ vioserial/sys/Port.c         |   1 +
+ vioserial/sys/trace.h        |   2 +-
+ vioserial/sys/utils.c        |   2 +-
+ vioserial/sys/vioser.h       |   2 +
+ vioserial/sys/vioser.vcxproj |   2 +-
+ 10 files changed, 194 insertions(+), 26 deletions(-)
+
+-- 
+2.7.0.windows.1
+

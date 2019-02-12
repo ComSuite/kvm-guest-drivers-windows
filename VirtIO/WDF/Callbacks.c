@@ -34,117 +34,61 @@
 #include "VirtIOWdf.h"
 #include "private.h"
 
-
-static LONGLONG get_dma_map_get_item_index(struct virtio_dma *dma, void *virt)
-{
-    for (ULONG i = 0; i < dma->last_index; i++)
-    {
-        if (virt >= dma->dma_map[i].dma_virtual_address && (u8*)virt < ((u8*)dma->dma_map[i].dma_virtual_address + dma->dma_map[i].size))
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-static LONGLONG get_free_item_index(struct virtio_dma *dma)
-{
-    LONGLONG index = -1;
-
-    if (dma->free_index >= 0)
-    {
-        index = dma->free_index;
-        for (LONGLONG i = index + 1; i < dma->last_index; i++)
-        {
-            if (dma->dma_map[i].used == 0)
-            {
-                dma->free_index = i;
-                return index;
-            }
-        }
-        dma->free_index = -1;
-    }
-    else
-    {
-        if (dma->last_index < dma->max_index)
-        {
-            index = dma->last_index;
-            dma->last_index++;
-        }
-    }
-
-    return index;
-}
-
-static WDFCOMMONBUFFER get_common_buffer(struct virtio_dma *dma, void *virt, BOOLEAN clear)
-{
-    if (dma == NULL || virt == NULL)
-        return NULL;
-
-    WDFCOMMONBUFFER buffer = NULL;
-
-    LONGLONG i = get_dma_map_get_item_index(dma, virt);
-    if (i >= 0)
-    {
-        buffer = dma->dma_map[i].dma_common_buffer;
-        if (clear)
-        {
-            RtlZeroMemory(&dma->dma_map[i], sizeof(struct virtio_dma_item));
-            if (dma->free_index < 0 || i < dma->free_index)
-                dma->free_index = i;
-        }
-    }
-
-    return buffer;
-}
-
 static void *mem_alloc_contiguous_pages(void *context, size_t size)
 {
-    void *ret = NULL;
-    NTSTATUS status;
-    WDFDMAENABLER dma_enabler = NULL;
-    WDFCOMMONBUFFER buffer = NULL;
     VirtIODevice *device = (VirtIODevice*)context;
+    struct virtio_dma *dma = &device->dma;
+    void *ret_val = NULL;
+    ULONG i;
 
-    if (device != NULL)
-    {
-        dma_enabler = device->dma.dma_enabler;
-        if (dma_enabler != NULL)
+    for (i = 0; i < dma->count; i++) {
+        if (dma->dma_map[i].dma_virtual_address != NULL &&
+            dma->dma_map[i].used == FALSE &&
+            dma->dma_map[i].size == size)
         {
-            LONGLONG i = get_free_item_index(&device->dma);
-            if (i >= 0)
-            {
-                status = WdfCommonBufferCreate(dma_enabler, size, WDF_NO_OBJECT_ATTRIBUTES, &buffer);
-                if (status == STATUS_SUCCESS)
-                {
-                    ret = WdfCommonBufferGetAlignedVirtualAddress(buffer);
-                    device->dma.dma_map[i].dma_common_buffer = buffer;
-                    device->dma.dma_map[i].dma_virtual_address = ret;
-                    device->dma.dma_map[i].dma_physical_address = WdfCommonBufferGetAlignedLogicalAddress(buffer);
-                    device->dma.dma_map[i].size = size;
-                    device->dma.dma_map[i].used = 1;
-                }
-            }
+            ret_val = dma->dma_map[i].dma_virtual_address;
+            dma->dma_map[i].used = TRUE;
+            break;
         }
     }
 
-    if (ret != NULL)
+    if (!ret_val)
     {
-        RtlZeroMemory(ret, size);
+        for (i = 0; i < dma->count; i++) {
+            if (dma->dma_map[i].dma_virtual_address == NULL) 
+            {
+                break;
+            }
+        }
+        if (i < dma->count)
+        {
+            if (WdfCommonBufferCreate(dma->dma_enabler, size, WDF_NO_OBJECT_ATTRIBUTES, (WDFCOMMONBUFFER*)&dma->dma_map[i].dma_common_buffer) == STATUS_SUCCESS)
+            {
+                ret_val = WdfCommonBufferGetAlignedVirtualAddress(dma->dma_map[i].dma_common_buffer);
+                dma->dma_map[i].dma_virtual_address = ret_val;
+                dma->dma_map[i].dma_physical_address = WdfCommonBufferGetAlignedLogicalAddress(dma->dma_map[i].dma_common_buffer);
+                memset(ret_val, 0x00, size);
+                dma->dma_map[i].size = size;
+                dma->dma_map[i].used = TRUE;
+            }
+        }
     }
-
-    return ret;
+    return ret_val;
 }
 
 static void mem_free_contiguous_pages(void *context, void *virt)
 {
-    if (context != NULL)
-    {
-        WDFCOMMONBUFFER buffer = get_common_buffer(&((VirtIODevice *)context)->dma, virt, TRUE);
-        if (buffer != NULL)
+    VirtIODevice *device = (VirtIODevice*)context;
+    struct virtio_dma *dma = &device->dma;
+    ULONG i;
+
+    for (i = 0; i < dma->count; i++) {
+        if (dma->dma_map[i].dma_virtual_address == virt) 
         {
-            WdfObjectDelete(buffer);
+            WdfObjectDelete(dma->dma_map[i].dma_common_buffer);
+            RtlZeroMemory(&dma->dma_map[i], sizeof(struct virtio_dma_item));
+            dma->dma_map[i].used = FALSE;
+            break;
         }
     }
 }
@@ -152,14 +96,16 @@ static void mem_free_contiguous_pages(void *context, void *virt)
 static ULONGLONG mem_get_physical_address(void *context, void *virt)
 {
     VirtIODevice *device = (VirtIODevice*)context;
+    struct virtio_dma *dma = &device->dma;
+    ULONG i;
 
-    LONGLONG i = get_dma_map_get_item_index(&device->dma, virt);
-    if (i >= 0)
-    {
-        LONGLONG delta = (u8*)virt - (u8*)device->dma.dma_map[i].dma_virtual_address;
-        return device->dma.dma_map[i].dma_physical_address.QuadPart + delta;
+    for (i = 0; i < dma->count; i++) {
+        void *uBase = dma->dma_map[i].dma_virtual_address;
+        if (virt >= uBase && (u8*)virt < ((u8*)uBase + dma->dma_map[i].size)) 
+        {
+            return  dma->dma_map[i].dma_physical_address.QuadPart + ((u8*)virt - (u8*)uBase);
+        }
     }
-
     return 0;
 }
 
